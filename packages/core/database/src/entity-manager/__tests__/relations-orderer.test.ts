@@ -141,6 +141,42 @@ describe('Given I have some relations in the database', () => {
       ]);
     });
   });
+
+  describe('#25710 reorder + remove in same save (PR #26210)', () => {
+    const remainingAfterDelete = [
+      { id: 1, order: 2 }, // A
+      { id: 3, order: 3 }, // C
+    ];
+
+    test('{ end: true } rewrite appends A after C — wrong order', () => {
+      const orderer = relationsOrderer(remainingAfterDelete, 'id', 'order', true);
+      orderer.connect([{ id: 1, position: { end: true } }]);
+
+      expect(orderer.get().map((r) => r.id)).toEqual([3, 1]);
+    });
+
+    test('neighbor rewrite ({ start: true } for before-first-anchor) preserves [A, C]', () => {
+      const orderer = relationsOrderer(remainingAfterDelete, 'id', 'order', true);
+      orderer.connect([{ id: 1, position: { start: true } }]);
+
+      expect(orderer.get().map((r) => r.id)).toEqual([1, 3]);
+    });
+
+    test('{ before: successor } rewrite preserves editor intent [A, C]', () => {
+      const orderer = relationsOrderer(remainingAfterDelete, 'id', 'order', true);
+      orderer.connect([{ id: 1, position: { before: 3 } }]);
+
+      expect(orderer.get().map((r) => r.id)).toEqual([1, 3]);
+    });
+
+    test('stale position.before deleted anchor throws without rewrite', () => {
+      const orderer = relationsOrderer(remainingAfterDelete, 'id', 'order', true);
+
+      expect(() => orderer.connect([{ id: 1, position: { before: 2 } }])).toThrow(
+        /needs to be connected first/
+      );
+    });
+  });
 });
 
 describe('Given there are no relations in the database', () => {

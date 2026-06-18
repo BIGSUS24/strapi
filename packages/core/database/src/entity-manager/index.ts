@@ -1177,17 +1177,79 @@ export const createEntityManager = (db: Database): EntityManager => {
               }
               relIdsToaddOrMove = toIds(cleanRelationData.connect);
 
+              const disconnectIds = new Set(toIds(cleanRelationData.disconnect));
+
               // When a connect item's position.before/after references an id that is
               // also being disconnected, the referenced row will be deleted before the
               // adjacentRelations query runs, causing sortConnectArray to throw.
-              // Rewrite such positions to {end: true} so the ordering gracefully
-              // falls back to appending instead of crashing.
-              const disconnectIds = new Set(toIds(cleanRelationData.disconnect));
+              // Rewrite to a still-present neighbor (or start/end) using the current
+              // join-table order fetched before delete.
+              let currentOrderedRels: Array<Record<string, ID>> = [];
+
+              if (hasOrderColumn(attribute) && disconnectIds.size > 0) {
+                currentOrderedRels = await this.createQueryBuilder(joinTable.name)
+                  .select([inverseJoinColumn.name, orderColumnName])
+                  .where({ [joinColumn.name]: id })
+                  .where(joinTable.on || {})
+                  .orderBy(orderColumnName)
+                  .transacting(trx)
+                  .execute();
+              }
+
               const resolvedConnect = (cleanRelationData.connect ?? []).map((item) => {
-                const adjacentId = item.position?.before ?? item.position?.after;
-                return adjacentId != null && disconnectIds.has(adjacentId)
-                  ? { ...item, position: { end: true } }
-                  : item;
+                const position = item.position;
+
+                if (!position) {
+                  return item;
+                }
+
+                const adjacentId = position.before ?? position.after;
+
+                if (adjacentId == null || !disconnectIds.has(adjacentId)) {
+                  return item;
+                }
+
+                const orderedIds = currentOrderedRels.map((row) => row[inverseJoinColumn.name]);
+
+                if (isEmpty(orderedIds)) {
+                  return { ...item, position: { end: true } };
+                }
+
+                const anchorIdx = orderedIds.indexOf(adjacentId);
+
+                if (anchorIdx === -1) {
+                  return { ...item, position: { end: true } };
+                }
+
+                if (position.before != null) {
+                  const successorId = orderedIds[anchorIdx + 1];
+
+                  if (successorId != null && successorId !== item.id) {
+                    return { ...item, position: { before: successorId } };
+                  }
+
+                  const predecessorId = orderedIds[anchorIdx - 1];
+
+                  if (predecessorId != null) {
+                    return { ...item, position: { after: predecessorId } };
+                  }
+
+                  return { ...item, position: { start: true } };
+                }
+
+                const predecessorId = orderedIds[anchorIdx - 1];
+
+                if (predecessorId != null && predecessorId !== item.id) {
+                  return { ...item, position: { after: predecessorId } };
+                }
+
+                const successorId = orderedIds[anchorIdx + 1];
+
+                if (successorId != null) {
+                  return { ...item, position: { before: successorId } };
+                }
+
+                return { ...item, position: { end: true } };
               });
 
               // Use id-only comparison so a disconnect item whose id also appears in
@@ -1241,9 +1303,7 @@ export const createEntityManager = (db: Database): EntityManager => {
                         [joinColumn.name]: id,
                         [inverseJoinColumn.name]: {
                           $in: compact(
-                            resolvedConnect.map(
-                              (r) => r.position?.after || r.position?.before
-                            )
+                            resolvedConnect.map((r) => r.position?.after || r.position?.before)
                           ),
                         },
                       },

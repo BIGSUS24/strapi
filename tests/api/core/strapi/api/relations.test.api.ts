@@ -1293,6 +1293,51 @@ describe('Relations', () => {
       expect(updatedShop.data).toMatchObject(expectedShop);
     });
 
+    test('reorder and remove relation in same save (#25710)', async () => {
+      // Initial order: B, A, C — the case where { end: true } fallback may append A instead of
+      // keeping it before C after B is removed.
+      const shop = await createShop({
+        anyToManyRel: [
+          { documentId: docid2, position: { start: true } },
+          { documentId: docid1, position: { after: docid2 } },
+          { documentId: docid3, position: { end: true } },
+        ],
+      });
+
+      expect(shop.data.products_mw).toMatchObject([
+        { documentId: docid2 },
+        { documentId: docid1 },
+        { documentId: docid3 },
+      ]);
+
+      const reorderAndRemove = {
+        options: { strict: true },
+        connect: [{ documentId: docid1, position: { before: docid2 } }],
+        disconnect: [{ documentId: docid2 }],
+      };
+
+      const updatedShop = await updateEntry(
+        'shops',
+        shop.data.documentId,
+        {
+          name: 'Cazotte Shop',
+          products_mw: reorderAndRemove,
+          myCompo: {
+            compo_products_mw: reorderAndRemove,
+          },
+        },
+        populateShop
+      );
+
+      expect(updatedShop.error).toBeUndefined();
+
+      // Move A before B, remove B → A should stay before C (not appended after C).
+      const expectedOrder = [{ documentId: docid1 }, { documentId: docid3 }];
+
+      expect(updatedShop.data.products_mw).toMatchObject(expectedOrder);
+      expect(updatedShop.data.myCompo.compo_products_mw).toMatchObject(expectedOrder);
+    });
+
     test('Update polymorphic relations with different types using before and after', async () => {
       const shop = await createEntry('shops', {
         name: 'Cazotte Shop',
